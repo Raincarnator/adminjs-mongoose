@@ -10,6 +10,7 @@
     }
   },
   "scripts": {
+    "prepare": "npm run build",
     "dev": "rm -rf lib && tsc --watch",
     "clean": "rm -rf lib",
     "build": "tsc",

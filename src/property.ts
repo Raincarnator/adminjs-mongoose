@@ -7,31 +7,6 @@ class Property extends BaseProperty {
   // TODO: Fix typings
   public mongoosePath: any
 
-  /**
-     * Crates an object from mongoose schema path
-     *
-     * @param  {SchemaString}   path
-     * @param  {String[]}       path.enumValues
-     * @param  {String}         path.regExp
-     * @param  {String}         path.path
-     * @param  {String}         path.instance
-     * @param  {Object[]}       path.validators
-     * @param  {Object[]}       path.setters
-     * @param  {Object[]}       path.getters
-     * @param  {Object}         path.options
-     * @param  {Object}         path._index
-     * @param  {number}         position
-     *
-     * @private
-     *
-     * @example
-     *
-     * const schema = new mongoose.Schema({
-     *   email: String,
-     * })
-     *
-     * property = new Property(schema.paths.email))
-     */
   constructor(path, position = 0) {
     super({ path: path.path, position })
     this.mongoosePath = path
@@ -39,26 +14,26 @@ class Property extends BaseProperty {
 
   instanceToType(mongooseInstance) {
     switch (mongooseInstance) {
-    case 'String':
-      return 'string'
-    case 'Boolean':
-      return 'boolean'
-    case 'Number':
-      return 'number'
-    case 'Date':
-      return 'datetime'
-    case 'Embedded':
-      return 'mixed'
-    case 'ObjectID':
-    case 'ObjectId':
-      if (this.reference()) {
-        return 'reference'
-      }
-      return 'id' as PropertyType
-    case 'Decimal128':
-      return 'float'
-    default:
-      return 'string'
+      case 'String':
+        return 'string'
+      case 'Boolean':
+        return 'boolean'
+      case 'Number':
+        return 'number'
+      case 'Date':
+        return 'datetime'
+      case 'Embedded':
+        return 'mixed'
+      case 'ObjectID':
+      case 'ObjectId':
+        if (this.reference()) {
+          return 'reference'
+        }
+        return 'id' as PropertyType
+      case 'Decimal128':
+        return 'float'
+      default:
+        return 'string'
     }
   }
 
@@ -70,13 +45,62 @@ class Property extends BaseProperty {
     return this.name() !== VERSION_KEY_PROPERTY && this.name() !== ID_PROPERTY
   }
 
+  /**
+   * Mongoose 9 removed `caster` for arrays in some cases.
+   * We support both:
+   * - Mongoose <= 8: mongoosePath.caster
+   * - Mongoose 9+: mongoosePath.embeddedSchemaType / $embeddedSchemaType / fallbacks
+   */
+  private getEmbeddedSchema() {
+    // Mongoose <= 8
+    if (this.mongoosePath?.caster?.schema) return this.mongoosePath.caster.schema
+
+    // Mongoose 9+
+    const est =
+      this.mongoosePath?.embeddedSchemaType ??
+      this.mongoosePath?.$embeddedSchemaType ??
+      this.mongoosePath?.schema?.$embeddedSchemaType
+
+    if (est?.schema) return est.schema
+
+    // Fallbacks (depending on Mongoose internal structures)
+    const ctor =
+      this.mongoosePath?.casterConstructor ??
+      this.mongoosePath?.Constructor
+
+    if (ctor?.schema) return ctor.schema
+
+    return undefined
+  }
+
+  private getArrayRef() {
+    // Mongoose <= 8
+    if (this.mongoosePath?.caster?.options?.ref) return this.mongoosePath.caster.options.ref
+
+    // Mongoose 9+
+    const est =
+      this.mongoosePath?.embeddedSchemaType ??
+      this.mongoosePath?.$embeddedSchemaType ??
+      this.mongoosePath?.schema?.$embeddedSchemaType
+
+    if (est?.options?.ref) return est.options.ref
+
+    // Fallbacks
+    const ctor =
+      this.mongoosePath?.casterConstructor ??
+      this.mongoosePath?.Constructor
+
+    if (ctor?.schema?.options?.ref) return ctor.schema.options.ref
+
+    return undefined
+  }
+
   reference() {
     const ref = this.isArray()
-      ? this.mongoosePath.caster.options?.ref
+      ? this.getArrayRef()
       : this.mongoosePath.options?.ref
 
     if (typeof ref === 'function') return ref.modelName
-
     return ref
   }
 
@@ -98,7 +122,10 @@ class Property extends BaseProperty {
 
   subProperties() {
     if (this.type() === 'mixed') {
-      const subPaths = Object.values(this.mongoosePath.caster.schema.paths)
+      const schema = this.getEmbeddedSchema()
+      if (!schema?.paths) return []
+
+      const subPaths = Object.values(schema.paths)
       return subPaths.map((p) => new Property(p))
     }
     return []
@@ -106,14 +133,39 @@ class Property extends BaseProperty {
 
   type() {
     if (this.isArray()) {
-      let { instance } = this.mongoosePath.caster
+      // Mongoose <= 8
+      let instance = this.mongoosePath?.caster?.instance
+
       // For array of embedded schemas mongoose returns null for caster.instance
-      // That is why we have to check if caster has a schema
-      if (!instance && this.mongoosePath.caster.schema) {
+      if (!instance && this.mongoosePath?.caster?.schema) {
         instance = 'Embedded'
       }
+
+      // Mongoose 9+: arrays of subdocuments expose embeddedSchemaType / $embeddedSchemaType
+      if (!instance) {
+        const est =
+          this.mongoosePath?.embeddedSchemaType ??
+          this.mongoosePath?.$embeddedSchemaType ??
+          this.mongoosePath?.schema?.$embeddedSchemaType
+
+        if (est?.schema) instance = 'Embedded'
+        else if (est?.instance) instance = est.instance
+      }
+
+      // Last fallback: Constructor / casterConstructor
+      if (!instance) {
+        const ctor =
+          this.mongoosePath?.casterConstructor ??
+          this.mongoosePath?.Constructor
+        if (ctor?.schema) instance = 'Embedded'
+      }
+
+      // Avoid crash if unknown
+      if (!instance) instance = 'String'
+
       return this.instanceToType(instance)
     }
+
     return this.instanceToType(this.mongoosePath.instance)
   }
 
